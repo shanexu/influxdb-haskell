@@ -21,37 +21,19 @@ module Database.InfluxDB.Manage
   , database
   , precision
   , manager
-
-  -- * Management query results
-  -- ** SHOW QUERIES
-  , ShowQuery
-  , qid
-  , queryText
-  , duration
-
-  -- ** SHOW SERIES
-  , ShowSeries
-  , key
   ) where
-import Control.Applicative
 import Control.Exception
 import Control.Monad
 
 import Control.Lens
 import Data.Aeson
-import Data.Scientific (toBoundedInteger)
-import Data.Text (Text)
-import Data.Time.Clock
 import Data.Void
 import qualified Data.Aeson.Types as A
-import qualified Data.Attoparsec.Combinator as AC
-import qualified Data.Attoparsec.Text as AT
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import qualified Network.HTTP.Client as HC
 import qualified Network.HTTP.Types as HT
 
-import Database.InfluxDB.JSON (getField)
 import Database.InfluxDB.Types as Types
 import Database.InfluxDB.Query hiding (query)
 import qualified Database.InfluxDB.Format as F
@@ -103,98 +85,3 @@ manageRequest params = HC.defaultRequest
   }
   where
     Server {..} = params^.server
-
--- |
--- >>> v <- query (queryParams "_internal") "SHOW QUERIES" :: IO (V.Vector ShowQuery)
-data ShowQuery = ShowQuery
-  { showQueryQid :: !Int
-  , showQueryText :: !Query
-  , showQueryDatabase :: !Database
-  , showQueryDuration :: !NominalDiffTime
-  }
-
-instance QueryResults ShowQuery where
-  parseResults _ = parseResultsWith $ \_ _ columns fields ->
-    maybe (fail "parseResults: parse error") return $ do
-      Number (toBoundedInteger -> Just showQueryQid) <-
-        V.elemIndex "qid" columns >>= V.indexM fields
-      String (F.formatQuery F.text -> showQueryText) <-
-        V.elemIndex "query" columns >>= V.indexM fields
-      String (F.formatDatabase F.text -> showQueryDatabase) <-
-        V.elemIndex "database" columns >>= V.indexM fields
-      String (parseDuration -> Right showQueryDuration) <-
-        V.elemIndex "duration" columns >>= V.indexM fields
-      return ShowQuery {..}
-
-parseDuration :: Text -> Either String NominalDiffTime
-parseDuration = AT.parseOnly $ sum <$!> durations
-  where
-    durations = some $ (*)
-      <$> fmap fromIntegral int
-      <*> unit
-      where
-        int :: AT.Parser Int
-        int = AT.decimal
-    unit = AC.choice
-      [ 10^^(-6 :: Int) <$ AT.char 'u'
-      , 1 <$ AT.char 's'
-      , 60 <$ AT.char 'm'
-      , 3600 <$ AT.char 'h'
-      ]
-
-newtype ShowSeries = ShowSeries
-  { _key :: Key
-  }
-
-instance QueryResults ShowSeries where
-  parseResults _ = parseResultsWith $ \_ _ columns fields -> do
-    name <- getField "key" columns fields >>= parseJSON
-    return $ ShowSeries $ F.formatKey F.text name
-
-makeLensesWith
-  ( lensRules
-    & generateSignatures .~ False
-    & lensField .~ lookingupNamer
-      [ ("showQueryQid", "qid")
-      , ("showQueryText", "queryText")
-      , ("showQueryDatabase", "_database")
-      , ("showQueryDuration", "duration")
-      ]
-  ) ''ShowQuery
-
--- | Query ID
---
--- >>> v <- query (queryParams "_internal") "SHOW QUERIES" :: IO (V.Vector ShowQuery)
--- >>> v ^.. each.qid
--- ...
-qid :: Lens' ShowQuery Int
-
--- | Query text
---
--- >>> v <- query (queryParams "_internal") "SHOW QUERIES" :: IO (V.Vector ShowQuery)
--- >>> v ^.. each.queryText
--- ...
-queryText :: Lens' ShowQuery Query
-
--- |
--- >>> v <- query (queryParams "_internal") "SHOW QUERIES" :: IO (V.Vector ShowQuery)
--- >>> v ^.. each.database
--- ...
-instance HasDatabase ShowQuery where
-  database = _database
-
--- | Duration of the query
---
--- >>> v <- query (queryParams "_internal") "SHOW QUERIES" :: IO (V.Vector ShowQuery)
--- >>> v ^.. each.duration
--- ...
-duration :: Lens' ShowQuery NominalDiffTime
-
-makeLensesWith (lensRules & generateSignatures .~ False) ''ShowSeries
-
--- | Series name
---
--- >>> v <- query (queryParams "_internal") "SHOW SERIES" :: IO (V.Vector ShowSeries)
--- >>> length $ v ^.. each.key
--- ...
-key :: Lens' ShowSeries Key
